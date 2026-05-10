@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MCM/ICM 奖项分析器</title>
+  <style>
+    :root { font-family: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    body { margin: 0; background: #f3f6fb; color: #1f2937; }
+    .container { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    .card { background: #fff; border-radius: 14px; box-shadow: 0 10px 28px rgba(15, 23, 42, .08); padding: 20px; }
+    h1 { margin: 0 0 12px; }
+    .tip { color: #6b7280; font-size: 14px; margin-top: 8px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
+    .field { display: flex; flex-direction: column; gap: 8px; }
+    label { font-weight: 600; }
+    input, textarea, button, select {
+      border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 12px; font-size: 15px;
+    }
+    textarea { min-height: 260px; resize: vertical; line-height: 1.5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+    button { background: #2563eb; color: #fff; border: none; cursor: pointer; }
+    button.secondary { background: #475569; }
+    button:hover { opacity: .95; }
+    .stats { display: grid; grid-template-columns: repeat(4,minmax(120px,1fr)); gap: 10px; margin: 16px 0; }
+    .stat { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; }
+    .stat .k { color: #6b7280; font-size: 13px; }
+    .stat .v { font-size: 20px; font-weight: 700; margin-top: 6px; }
+    .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    canvas { width: 100%; height: 360px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; }
+    .hidden { display: none; }
+    .warn { color: #b45309; }
+    @media (max-width: 900px) { .grid,.charts { grid-template-columns: 1fr; } .stats { grid-template-columns: 1fr 1fr; } }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <section class="card">
+      <h1>学校 MCM/ICM 奖项分析器</h1>
+      <div class="tip">支持两种模式：① 直接输入学校名（自动从内置示例库查询）；② 粘贴你的原始统计数据，进行真实统计与图表生成。</div>
+
+      <div class="grid">
+        <div class="field">
+          <label for="school">学校名</label>
+          <input id="school" placeholder="例如：Tsinghua University" />
+
+          <label for="rawData">原始数据（可选，优先级最高）</label>
+          <textarea id="rawData" placeholder="格式：每行 year,award,count&#10;示例：&#10;2023,Finalist,5&#10;2023,Meritorious Winner,18&#10;2024,Honorable Mention,21"></textarea>
+
+          <div class="btns">
+            <button id="analyzeBtn">分析并绘图</button>
+            <button id="fillSampleBtn" class="secondary">填充示例数据</button>
+            <button id="clearBtn" class="secondary">清空</button>
+          </div>
+          <div class="tip" id="message"></div>
+        </div>
+
+        <div id="resultPane" class="hidden">
+          <div class="stats">
+            <div class="stat"><div class="k">学校</div><div class="v" id="sSchool">-</div></div>
+            <div class="stat"><div class="k">总队伍数</div><div class="v" id="sTeams">0</div></div>
+            <div class="stat"><div class="k">高奖率 (O+F)</div><div class="v" id="sTopRate">0%</div></div>
+            <div class="stat"><div class="k">最高奖项桶</div><div class="v" id="sMost">-</div></div>
+          </div>
+          <div class="charts">
+            <canvas id="awardChart" width="520" height="360"></canvas>
+            <canvas id="trendChart" width="520" height="360"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const AWARDS = ["Outstanding Winner", "Finalist", "Meritorious Winner", "Honorable Mention", "Successful Participant"];
+    const COLORS = ["#7c3aed", "#2563eb", "#16a34a", "#f59e0b", "#64748b"];
+
+    const SAMPLE_DB = {
+      "tsinghua university": [
+        [2023, "Outstanding Winner", 1],[2023, "Finalist", 3],[2023, "Meritorious Winner", 10],[2023, "Honorable Mention", 19],[2023, "Successful Participant", 14],
+        [2024, "Outstanding Winner", 1],[2024, "Finalist", 3],[2024, "Meritorious Winner", 12],[2024, "Honorable Mention", 20],[2024, "Successful Participant", 13]
+      ],
+      "mit": [
+        [2023, "Outstanding Winner", 2],[2023, "Finalist", 4],[2023, "Meritorious Winner", 8],[2023, "Honorable Mention", 9],[2023, "Successful Participant", 7],
+        [2024, "Outstanding Winner", 1],[2024, "Finalist", 4],[2024, "Meritorious Winner", 10],[2024, "Honorable Mention", 11],[2024, "Successful Participant", 8]
+      ]
+    };
+
+    function setMessage(text, warn = false) {
+      const el = document.getElementById("message");
+      el.textContent = text;
+      el.className = warn ? "tip warn" : "tip";
+    }
+
+    function parseRaw(text) {
+      const lines = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
+      const rows = [];
+      for (const ln of lines) {
+        const [year, award, count] = ln.split(",").map(s => (s || "").trim());
+        const y = Number(year), c = Number(count);
+        if (!year || !award || Number.isNaN(y) || Number.isNaN(c) || !AWARDS.includes(award)) {
+          throw new Error(`格式错误：${ln}`);
+        }
+        rows.push([y, award, c]);
+      }
+      return rows;
+    }
+
+    function aggregate(rows) {
+      const awards = Object.fromEntries(AWARDS.map(k => [k, 0]));
+      const byYear = {};
+      rows.forEach(([y, a, c]) => {
+        awards[a] += c;
+        byYear[y] ??= Object.fromEntries(AWARDS.map(k => [k, 0]));
+        byYear[y][a] += c;
+      });
+      const totalTeams = Object.values(awards).reduce((s, v) => s + v, 0);
+      return { awards, byYear, totalTeams };
+    }
+
+    function drawBar(canvas, title, labels, values) {
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width, H = canvas.height;
+      const pad = { l: 56, r: 20, t: 36, b: 78 };
+      const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = "#111827"; ctx.font = "bold 16px sans-serif"; ctx.fillText(title, pad.l, 24);
+      const max = Math.max(...values, 1);
+      ctx.strokeStyle = "#9ca3af"; ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, pad.t + ch); ctx.lineTo(pad.l + cw, pad.t + ch); ctx.stroke();
+      const unit = cw / labels.length;
+      values.forEach((v, i) => {
+        const bw = unit * 0.58;
+        const x = pad.l + i * unit + (unit - bw) / 2;
+        const h = (v / max) * ch;
+        const y = pad.t + ch - h;
+        ctx.fillStyle = COLORS[i % COLORS.length];
+        ctx.fillRect(x, y, bw, h);
+        ctx.fillStyle = "#111827"; ctx.textAlign = "center"; ctx.fillText(String(v), x + bw / 2, y - 6);
+        ctx.save(); ctx.translate(x + bw / 2, pad.t + ch + 18); ctx.rotate(-Math.PI / 7); ctx.fillStyle = "#334155"; ctx.fillText(labels[i], 0, 0); ctx.restore();
+      });
+      ctx.textAlign = "start";
+    }
+
+    function drawTrend(canvas, byYear) {
+      const years = Object.keys(byYear).map(Number).sort((a,b) => a - b);
+      const totals = years.map(y => AWARDS.reduce((s, k) => s + byYear[y][k], 0));
+      drawBar(canvas, "年度参赛队伍趋势", years.map(String), totals);
+    }
+
+    function runAnalysis() {
+      const school = document.getElementById("school").value.trim();
+      const raw = document.getElementById("rawData").value.trim();
+
+      let rows;
+      if (raw) {
+        rows = parseRaw(raw);
+        setMessage("已使用你提供的原始数据完成统计。", false);
+      } else {
+        const key = school.toLowerCase();
+        if (!school) return setMessage("请先输入学校名，或粘贴原始数据。", true);
+        if (!SAMPLE_DB[key]) return setMessage("示例库中未找到该学校，请粘贴原始数据进行真实分析。", true);
+        rows = SAMPLE_DB[key];
+        setMessage("已使用内置示例库数据。", false);
+      }
+
+      const { awards, byYear, totalTeams } = aggregate(rows);
+      const topBucket = AWARDS.reduce((a,b) => awards[a] > awards[b] ? a : b);
+      const highRate = totalTeams ? ((awards["Outstanding Winner"] + awards["Finalist"]) / totalTeams * 100).toFixed(1) : "0.0";
+
+      document.getElementById("sSchool").textContent = school || "（来自原始数据）";
+      document.getElementById("sTeams").textContent = totalTeams;
+      document.getElementById("sTopRate").textContent = `${highRate}%`;
+      document.getElementById("sMost").textContent = topBucket;
+
+      drawBar(document.getElementById("awardChart"), "奖项分布", AWARDS, AWARDS.map(k => awards[k]));
+      drawTrend(document.getElementById("trendChart"), byYear);
+      document.getElementById("resultPane").classList.remove("hidden");
+    }
+
+    document.getElementById("analyzeBtn").addEventListener("click", () => {
+      try { runAnalysis(); } catch (e) { setMessage(e.message, true); }
+    });
+
+    document.getElementById("fillSampleBtn").addEventListener("click", () => {
+      document.getElementById("school").value = "Demo University";
+      document.getElementById("rawData").value = [
+        "2022,Outstanding Winner,1",
+        "2022,Finalist,2",
+        "2022,Meritorious Winner,8",
+        "2022,Honorable Mention,10",
+        "2022,Successful Participant,6",
+        "2023,Outstanding Winner,1",
+        "2023,Finalist,3",
+        "2023,Meritorious Winner,9",
+        "2023,Honorable Mention,11",
+        "2023,Successful Participant,7",
+        "2024,Outstanding Winner,2",
+        "2024,Finalist,4",
+        "2024,Meritorious Winner,10",
+        "2024,Honorable Mention,12",
+        "2024,Successful Participant,8"
+      ].join("\n");
+      setMessage("已填充示例数据，点击“分析并绘图”。", false);
+    });
+
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      document.getElementById("school").value = "";
+      document.getElementById("rawData").value = "";
+      document.getElementById("resultPane").classList.add("hidden");
+      setMessage("已清空。", false);
+    });
+  </script>
+</body>
+</html>
